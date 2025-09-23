@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 from pyrogram import Client, filters
+from statsExtractor import statsExtractor
 
 load_dotenv()
 
@@ -9,32 +10,41 @@ load_dotenv()
 class MyBot:
     def __init__(self):
         self.bot_token = os.getenv("BOT_TOKEN")
+        self.api_id = os.getenv("API_ID")
+        self.api_hash = os.getenv("API_HASH")
+        self.youtube_key = os.getenv("YOUTUBE_API_KEY")
+        self.youtube_channel_id = os.getenv("YOUTUBE_CHANNEL_ID")
+
         if not self.bot_token:
-            raise ValueError("Токен бота не указан в .env файле.")
+            raise ValueError("No token in .env file")
 
         self.app = Client(
             "processor",
-            bot_token=self.bot_token
+            bot_token = self.bot_token,
+            api_id = self.api_id,
+            api_hash = self.api_hash
         )
 
+        self.youtube = statsExtractor(api_key=self.youtube_key)
         self.register_handlers()
 
     def register_handlers(self):
         @self.app.on_message(filters.command("start"))
         async def start_handler(client, message):
-            pass # Что делаем на старте? 
+            await message.reply("Started default queue pipeline.")
 
         @self.app.on_message(filters.command("stat"))
-        async def help_handler(client, message):
-            pass # Какую стату тянем?
+        async def stat_handler(client, message):
+            result = self.youtube._get_channel_core_stats(self.youtube_channel_id)
+            await message.reply(result)
 
         @self.app.on_message(filters.command("enqueue"))
         async def ping_handler(client, message):
-            pass # Интеграция с нодой
+            pass
 
     def run(self):
         now = datetime.now()
-        print(f'[{now}] Startin application ...')
+        print(f'[{now}] Starting application ...')
         self.app.run()
         print(f'[{now}] Succesfully started')
 
