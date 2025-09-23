@@ -39,8 +39,8 @@ class MyBot:
             await message.reply(result)
 
         @self.app.on_message(filters.command("enqueue"))
-        async def ping_handler(client, message):
-            pass
+        async def enqueue_handler(client, message):
+            await message.reply("Enqueued a new video for processing.")
 
     def run(self):
         now = datetime.now()

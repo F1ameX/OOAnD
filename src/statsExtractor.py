@@ -62,3 +62,6 @@ class statsExtractor:
             if not page_token:
                 break
         return total
+    
+    def _get_agent_core_stats(self):
+        pass
