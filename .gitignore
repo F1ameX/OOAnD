@@ -1,3 +1,4 @@
 /venv/
 /src/.env
 /src/processor.session
+/src/account_stats.json
