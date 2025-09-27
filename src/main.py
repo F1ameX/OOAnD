@@ -36,6 +36,12 @@ class MyBot:
         @self.app.on_message(filters.command("stat"))
         async def stat_handler(client, message):
             result = self.youtube._get_channel_core_stats(self.youtube_channel_id)
+            print(self.youtube._get_agent_core_stats(
+                sa_json_path="src/account_stats.json",
+                spreadsheet_url_or_key=os.getenv("TABLE_LINK"),
+                worksheet_index=2,
+                header_row=1
+            ))
             await message.reply(result)
 
         @self.app.on_message(filters.command("enqueue"))
