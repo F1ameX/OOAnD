@@ -2,7 +2,8 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 from pyrogram import Client, filters
-from statsExtractor import statsExtractor
+from youtubeExtractor import youtubeExtractor
+from worksheetExtractor import worksheetExtractor
 
 load_dotenv()
 
@@ -14,6 +15,8 @@ class MyBot:
         self.api_hash = os.getenv("API_HASH")
         self.youtube_key = os.getenv("YOUTUBE_API_KEY")
         self.youtube_channel_id = os.getenv("YOUTUBE_CHANNEL_ID")
+        self.spreadsheet_url = os.getenv("TABLE_LINK")
+        self.file_location = os.getenv("FILE_LOCATION")
 
         if not self.bot_token:
             raise ValueError("No token in .env file")
@@ -25,7 +28,10 @@ class MyBot:
             api_hash = self.api_hash
         )
 
-        self.youtube = statsExtractor(api_key=self.youtube_key)
+        self.youtube = youtubeExtractor(api_key=self.youtube_key)
+        self.worksheet = worksheetExtractor(file_location=self.file_location,
+                                            spreadsheet_url=self.spreadsheet_url, 
+                                            worksheet_index=2)
         self.register_handlers()
 
     def register_handlers(self):
@@ -33,16 +39,14 @@ class MyBot:
         async def start_handler(client, message):
             await message.reply("Started default queue pipeline.")
 
+        
         @self.app.on_message(filters.command("stat"))
         async def stat_handler(client, message):
-            result = self.youtube._get_channel_core_stats(self.youtube_channel_id)
-            print(self.youtube._get_agent_core_stats(
-                sa_json_path="src/account_stats.json",
-                spreadsheet_url_or_key=os.getenv("TABLE_LINK"),
-                worksheet_index=2,
-                header_row=1
-            ))
-            await message.reply(result)
+            yt_stats = self.youtube._get_channel_core_stats(self.youtube_channel_id)
+            sheet_stats = self.worksheet._get_agent_core_stats(header_row=1)
+
+            sheet_text = sheet_stats.to_string(index=False)
+            await message.reply(f"📊 YouTube:\n{yt_stats}\n\n📑 Sheets:\n{sheet_text}")
 
         @self.app.on_message(filters.command("enqueue"))
         async def enqueue_handler(client, message):
@@ -52,7 +56,7 @@ class MyBot:
         now = datetime.now()
         print(f'[{now}] Starting application ...')
         self.app.run()
-        print(f'[{now}] Succesfully started')
+        print(f'[{now}] Exiting application ...')
 
 
 if __name__ == "__main__":
