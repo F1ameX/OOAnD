@@ -2,7 +2,6 @@ import pandas as pd
 from typing import Optional
 from gspread import service_account
 
-
 class worksheetExtractor:
     def __init__(
         self,
