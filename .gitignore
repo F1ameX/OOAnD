@@ -2,4 +2,5 @@
 /src/.env
 /src/processor.session
 /src/account_stats.json
+/src/state.json
 /src/__pycache__/
