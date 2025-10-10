@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
@@ -7,6 +8,7 @@ from pyrogram import Client, filters
 from youtubeExtractor import youtubeExtractor
 from worksheetExtractor import worksheetExtractor
 from authManager import authManager
+from apiManager import apiManager
 
 load_dotenv()
 
@@ -43,6 +45,9 @@ class MyBot:
             worksheet_index=2,
         )
 
+        self.apis = apiManager(secrets_path=os.getenv("SECRETS_PATH", "secrets.json"))
+        self.awaiting_api_json = set()
+
         self.autorun_enabled = False
         self.autorun_task = None
         self.autorun_minutes = 300
@@ -53,9 +58,7 @@ class MyBot:
         yt_stats = self.youtube._get_channel_core_stats(self.youtube_channel_id)
         sheet_stats = self.worksheet._get_agent_core_stats(header_row=1)
         sheet_text = sheet_stats.to_string(index=False)
-        await message.reply(
-            f"Пайплайн запущен\n\nYouTube:\n{yt_stats}\n\nSheets:\n{sheet_text}"
-        )
+        await message.reply(f"Пайплайн запущен\n\nYouTube:\n{yt_stats}\n\nSheets:\n{sheet_text}")
 
     async def autorun_loop(self, client, message):
         await message.reply(f"Autorun включен. Интервал: {self.autorun_minutes} мин")
@@ -69,9 +72,7 @@ class MyBot:
     def register_handlers(self):
         async def require_auth_or_reply(message):
             if not self.auth.is_authorized(message.chat.id):
-                await message.reply(
-                    "Доступ запрещён. Для авторизации отправь: <code>/start &lt;пароль&gt;</code>"
-                )
+                await message.reply("Доступ запрещён. Для авторизации отправь: <code>/start &lt;пароль&gt;</code>")
                 return False
             return True
 
@@ -81,9 +82,7 @@ class MyBot:
             already = self.auth.is_authorized(message.chat.id)
 
             if already:
-                await message.reply(
-                    "Вы уже авторизованы. Вам доступен весь функционал."
-                )
+                await message.reply("Вы уже авторизованы. Команды: /stat /enqueue /autorun /autostop /api /api_check")
                 return
 
             if len(parts) == 2:
@@ -92,20 +91,83 @@ class MyBot:
                     await message.delete()
                 except Exception:
                     pass
-
                 if ok:
-                    await message.reply(
-                        "Авторизация успешна."
-                    )
+                    await message.reply("Авторизация успешна. Доступны команды: /stat /enqueue /autorun /autostop /api /api_check")
                 else:
-                    await message.reply(
-                        "Неверный пароль."
-                    )
+                    await message.reply("Неверный пароль. Отправь: <code>/start &lt;пароль&gt;</code>")
                 return
 
-            await message.reply(
-                "Привет! Чтобы авторизоваться, отправь: <code>/start &lt;пароль&gt;</code>"
+            await message.reply("Привет! Чтобы авторизоваться, отправь: <code>/start &lt;пароль&gt;</code>")
+
+        @self.app.on_message(filters.command("api"))
+        async def api_handler(client, message):
+            if not await require_auth_or_reply(message):
+                return
+
+            status = self.apis.redact_status()
+            self.awaiting_api_json.add(message.chat.id)
+
+            tpl = (
+                "{\n"
+                '  "youtube":   { "api_key": "AIza...", "channel_id": "UCxxxxxxxxxxxxxxxxxx" },\n'
+                '  "sheets":    { "service_account_file": "src/account_stats.json", "spreadsheet_url": "https://docs.google.com/..." },\n'
+                '  "cloudinary":{ "cloud_name":"demo", "api_key":"xxx", "api_secret":"yyy" },\n'
+                '  "swiftia":   { "base_url":"https://api.swiftia.tld/health", "auth":"Bearer xxx" },\n'
+                '  "gemini":    { "api_key":"..." }\n'
+                "}"
             )
+
+            await message.reply(
+                "<b>API настройки</b>\n"
+                "Пришли одним следующим сообщением <b>JSON</b> c ключами (код-блоком или просто текстом). "
+                "Сообщение будет удалено.\n\n"
+                "<b>Шаблон:</b>\n"
+                f"<pre>{tpl}</pre>\n\n"
+                "<b>Текущий статус:</b>\n"
+                f"<pre>{json.dumps(status, ensure_ascii=False, indent=2)}</pre>"
+            )
+
+        @self.app.on_message(filters.text & ~filters.command(["api", "api_check", "start", "stat", "enqueue", "autorun", "autostop"]))
+        async def api_json_receiver(client, message):
+            if message.chat.id not in self.awaiting_api_json:
+                return
+            if not await require_auth_or_reply(message):
+                return
+
+            raw = message.text.strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw.lower().startswith("json"):
+                    raw = raw[4:].strip()
+
+            try:
+                payload = json.loads(raw)
+            except Exception as e:
+                await message.reply(f"Не удалось распарсить JSON: {e}\nПришли ещё раз или вызови /api для шаблона.")
+                return
+
+            self.apis.merge_update(payload)
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            self.awaiting_api_json.discard(message.chat.id)
+
+            results = self.apis.health_all(fallback_channel_id=self.youtube_channel_id)
+            await message.reply(
+                "Секреты сохранены. Результат проверки:\n"
+                f"<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>"
+            )
+
+        @self.app.on_message(filters.command("api_check"))
+        async def api_check_handler(client, message):
+            if not await require_auth_or_reply(message):
+                return
+            results = self.apis.health_all(fallback_channel_id=self.youtube_channel_id)
+            if results.get("all_ok"):
+                await message.reply("Все API работают.\n" f"<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>")
+            else:
+                await message.reply("Есть проблемы с API.\n" f"<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>")
 
         @self.app.on_message(filters.command("stat"))
         async def stat_handler(client, message):
@@ -123,7 +185,6 @@ class MyBot:
         async def autorun_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
-
             args = message.text.split()
             mins = 300
             if len(args) > 1:
@@ -132,30 +193,22 @@ class MyBot:
                 except ValueError:
                     await message.reply("Некорректный аргумент. Пример: /autorun 120")
                     return
-
             if not (15 <= mins <= 1440):
                 await message.reply("Допустимые значения минут: 15–1440")
                 return
-
             self.autorun_minutes = mins
             self.autorun_enabled = True
-
             await self.run_pipeline(client, message)
-
             if self.autorun_task is None or self.autorun_task.done():
-                self.autorun_task = asyncio.create_task(
-                    self.autorun_loop(client, message)
-                )
+                self.autorun_task = asyncio.create_task(self.autorun_loop(client, message))
 
         @self.app.on_message(filters.command("autostop"))
         async def autostop_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
-
             if not self.autorun_enabled:
                 await message.reply("Autorun уже выключен.")
                 return
-
             self.autorun_enabled = False
             if self.autorun_task:
                 self.autorun_task.cancel()
