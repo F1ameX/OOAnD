@@ -1,7 +1,10 @@
 import os
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+import requests
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 
@@ -9,6 +12,7 @@ from youtubeExtractor import youtubeExtractor
 from worksheetExtractor import worksheetExtractor
 from authManager import authManager
 from apiManager import apiManager
+from stateStore import stateStore
 
 load_dotenv()
 
@@ -31,12 +35,15 @@ class MyBot:
             bot_token=self.bot_token,
             api_id=self.api_id,
             api_hash=self.api_hash,
+            parse_mode="html",
         )
 
         self.auth = authManager(
             state_path=os.getenv("STATE_PATH", "state.json"),
             passphrase=os.getenv("AUTH_PASSPHRASE", ""),
         )
+        self.apis = apiManager(secrets_path=os.getenv("SECRETS_PATH", "secrets.json"))
+        self.state = stateStore(path=os.getenv("RUNTIME_STATE_PATH", "runtime_state.json"))
 
         self.youtube = youtubeExtractor(api_key=self.youtube_key)
         self.worksheet = worksheetExtractor(
@@ -45,29 +52,89 @@ class MyBot:
             worksheet_index=2,
         )
 
-        self.apis = apiManager(secrets_path=os.getenv("SECRETS_PATH", "secrets.json"))
-        self.awaiting_api_json = set()
-
-        self.autorun_enabled = False
+        ar = self.state.get_autorun()
+        self.autorun_enabled = bool(ar.get("enabled", False))
+        self.autorun_minutes = int(ar.get("minutes", 300))
+        self.autorun_chat_id = ar.get("chat_id")
         self.autorun_task = None
-        self.autorun_minutes = 300
 
+        self.awaiting_api_json = set()
         self.register_handlers()
+
+    def _n8n_headers(self) -> dict:
+        n8n = self.apis.data.get("n8n", {})
+        headers = {"Content-Type": "application/json"}
+        auth = n8n.get("auth")
+        if auth:
+            headers["Authorization"] = auth
+        return headers
+
+    def _n8n_url(self, key: str) -> str | None:
+        return self.apis.data.get("n8n", {}).get(key)
+
+    async def trigger_n8n_start(self, chat_id: int) -> str:
+        url = self._n8n_url("webhook_start")
+        if not url:
+            return "n8n webhook_start не настроен. Вызови /api и добавь URL."
+        try:
+            r = requests.post(
+                url,
+                headers=self._n8n_headers(),
+                data=json.dumps({"trigger": "manual", "chat_id": chat_id}),
+                timeout=20,
+            )
+            if 200 <= r.status_code < 300:
+                return "Пайплайн в n8n запущен."
+            return f"n8n ответил HTTP {r.status_code}: {r.text[:200]}"
+        except requests.Timeout:
+            return "n8n: таймаут запроса."
+        except Exception as e:
+            return f"n8n: ошибка запроса — {e}"
+
+    async def trigger_n8n_enqueue(self, chat_id: int, url_to_enqueue: str) -> str:
+        url = self._n8n_url("webhook_enqueue")
+        if not url:
+            return "n8n webhook_enqueue не настроен. Вызови /api и добавь URL."
+        try:
+            r = requests.post(
+                url,
+                headers=self._n8n_headers(),
+                data=json.dumps({"url": url_to_enqueue, "chat_id": chat_id}),
+                timeout=20,
+            )
+            if 200 <= r.status_code < 300:
+                return "Видео добавлено в очередь."
+            return f"n8n ответил HTTP {r.status_code}: {r.text[:200]}"
+        except requests.Timeout:
+            return "n8n: таймаут запроса."
+        except Exception as e:
+            return f"n8n: ошибка запроса — {e}"
 
     async def run_pipeline(self, client, message):
         yt_stats = self.youtube._get_channel_core_stats(self.youtube_channel_id)
         sheet_stats = self.worksheet._get_agent_core_stats(header_row=1)
         sheet_text = sheet_stats.to_string(index=False)
-        await message.reply(f"Пайплайн запущен\n\nYouTube:\n{yt_stats}\n\nSheets:\n{sheet_text}")
 
-    async def autorun_loop(self, client, message):
-        await message.reply(f"Autorun включен. Интервал: {self.autorun_minutes} мин")
-        while self.autorun_enabled:
+        await message.reply(f"Пайплайн: проверка метрик\n\n📊 YouTube:\n{yt_stats}\n\n📑 Sheets:\n{sheet_text}")
+
+        note = await self.trigger_n8n_start(message.chat.id)
+        await message.reply(note)
+
+        self.state.set_last_run_at(datetime.now(timezone.utc).isoformat())
+
+    async def autorun_loop(self, chat_id: int):
+        await self.app.send_message(chat_id, f"Autorun включен. Интервал: {self.autorun_minutes} мин")
+        while self.autorun_enabled and self.autorun_chat_id == chat_id:
             await asyncio.sleep(self.autorun_minutes * 60)
-            if not self.autorun_enabled:
+            if not self.autorun_enabled or self.autorun_chat_id != chat_id:
                 break
-            await self.run_pipeline(client, message)
-        await message.reply("Autorun остановлен")
+            try:
+                note = await self.trigger_n8n_start(chat_id)
+                await self.app.send_message(chat_id, f"Запуск по расписанию.\n{note}")
+                self.state.set_last_run_at(datetime.now(timezone.utc).isoformat())
+            except Exception as e:
+                await self.app.send_message(chat_id, f"Ошибка в autorun: {e}")
+        await self.app.send_message(chat_id, "Autorun остановлен")
 
     def register_handlers(self):
         async def require_auth_or_reply(message):
@@ -81,7 +148,12 @@ class MyBot:
             parts = message.text.split(maxsplit=1)
             already = self.auth.is_authorized(message.chat.id)
 
-            if already:
+            if already and len(parts) == 1:
+                note = await self.trigger_n8n_start(message.chat.id)
+                await message.reply(note)
+                return
+
+            if already and len(parts) > 1:
                 await message.reply("Вы уже авторизованы. Команды: /stat /enqueue /autorun /autostop /api /api_check")
                 return
 
@@ -99,92 +171,37 @@ class MyBot:
 
             await message.reply("Привет! Чтобы авторизоваться, отправь: <code>/start &lt;пароль&gt;</code>")
 
-        @self.app.on_message(filters.command("api"))
-        async def api_handler(client, message):
-            if not await require_auth_or_reply(message):
-                return
-
-            status = self.apis.redact_status()
-            self.awaiting_api_json.add(message.chat.id)
-
-            tpl = (
-                "{\n"
-                '  "youtube":   { "api_key": "AIza...", "channel_id": "UCxxxxxxxxxxxxxxxxxx" },\n'
-                '  "sheets":    { "service_account_file": "src/account_stats.json", "spreadsheet_url": "https://docs.google.com/..." },\n'
-                '  "cloudinary":{ "cloud_name":"demo", "api_key":"xxx", "api_secret":"yyy" },\n'
-                '  "swiftia":   { "base_url":"https://api.swiftia.tld/health", "auth":"Bearer xxx" },\n'
-                '  "gemini":    { "api_key":"..." }\n'
-                "}"
-            )
-
-            await message.reply(
-                "<b>API настройки</b>\n"
-                "Пришли одним следующим сообщением <b>JSON</b> c ключами (код-блоком или просто текстом). "
-                "Сообщение будет удалено.\n\n"
-                "<b>Шаблон:</b>\n"
-                f"<pre>{tpl}</pre>\n\n"
-                "<b>Текущий статус:</b>\n"
-                f"<pre>{json.dumps(status, ensure_ascii=False, indent=2)}</pre>"
-            )
-
-        @self.app.on_message(filters.text & ~filters.command(["api", "api_check", "start", "stat", "enqueue", "autorun", "autostop"]))
-        async def api_json_receiver(client, message):
-            if message.chat.id not in self.awaiting_api_json:
-                return
-            if not await require_auth_or_reply(message):
-                return
-
-            raw = message.text.strip()
-            if raw.startswith("```"):
-                raw = raw.strip("`")
-                if raw.lower().startswith("json"):
-                    raw = raw[4:].strip()
-
-            try:
-                payload = json.loads(raw)
-            except Exception as e:
-                await message.reply(f"Не удалось распарсить JSON: {e}\nПришли ещё раз или вызови /api для шаблона.")
-                return
-
-            self.apis.merge_update(payload)
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            self.awaiting_api_json.discard(message.chat.id)
-
-            results = self.apis.health_all(fallback_channel_id=self.youtube_channel_id)
-            await message.reply(
-                "Секреты сохранены. Результат проверки:\n"
-                f"<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>"
-            )
-
-        @self.app.on_message(filters.command("api_check"))
-        async def api_check_handler(client, message):
-            if not await require_auth_or_reply(message):
-                return
-            results = self.apis.health_all(fallback_channel_id=self.youtube_channel_id)
-            if results.get("all_ok"):
-                await message.reply("Все API работают.\n" f"<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>")
-            else:
-                await message.reply("Есть проблемы с API.\n" f"<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>")
-
         @self.app.on_message(filters.command("stat"))
         async def stat_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
-            await self.run_pipeline(client, message)
+            yt_stats = self.youtube._get_channel_core_stats(self.youtube_channel_id)
+            sheet_stats = self.worksheet._get_agent_core_stats(header_row=1)
+            sheet_text = sheet_stats.to_string(index=False)
+            await message.reply(f"📊 YouTube:\n{yt_stats}\n\n📑 Sheets:\n{sheet_text}")
 
         @self.app.on_message(filters.command("enqueue"))
         async def enqueue_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
-            await message.reply("Enqueued a new video for processing.")
+            args = message.text.split(maxsplit=1)
+            if len(args) < 2:
+                await message.reply("Используй: <code>/enqueue &lt;url&gt;</code>")
+                return
+
+            url_to_enqueue = args[1].strip()
+            if not self._is_valid_url(url_to_enqueue):
+                await message.reply("❌ Некорректный URL. Нужен http(s)://...")
+                return
+
+            note = await self.trigger_n8n_enqueue(message.chat.id, url_to_enqueue)
+            await message.reply(note)
 
         @self.app.on_message(filters.command("autorun"))
         async def autorun_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
+
             args = message.text.split()
             mins = 300
             if len(args) > 1:
@@ -196,28 +213,62 @@ class MyBot:
             if not (15 <= mins <= 1440):
                 await message.reply("Допустимые значения минут: 15–1440")
                 return
+
             self.autorun_minutes = mins
             self.autorun_enabled = True
-            await self.run_pipeline(client, message)
+            self.autorun_chat_id = message.chat.id
+            self.state.set_autorun(enabled=True, minutes=mins, chat_id=message.chat.id)
+
+            await message.reply(f"♻️ Autorun включен (каждые {mins} мин). Сразу запускаю пайплайн…")
+            note = await self.trigger_n8n_start(message.chat.id)
+            await message.reply(note)
+
             if self.autorun_task is None or self.autorun_task.done():
-                self.autorun_task = asyncio.create_task(self.autorun_loop(client, message))
+                self.autorun_task = asyncio.create_task(self.autorun_loop(message.chat.id))
 
         @self.app.on_message(filters.command("autostop"))
         async def autostop_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
+
             if not self.autorun_enabled:
                 await message.reply("Autorun уже выключен.")
                 return
+
             self.autorun_enabled = False
+            self.state.set_autorun(enabled=False, minutes=self.autorun_minutes, chat_id=self.autorun_chat_id)
             if self.autorun_task:
                 self.autorun_task.cancel()
-            await message.reply("Autorun выключен.")
+            await message.reply("🛑 Autorun выключен.")
+
+        @self.app.on_message(filters.command("api_check"))
+        async def api_check_handler(client, message):
+            if not await require_auth_or_reply(message):
+                return
+            results = self.apis.health_all(fallback_channel_id=self.youtube_channel_id)
+            msg = "✅ Все API работают." if results.get("all_ok") else "❌ Есть проблемы с API."
+            await message.reply(f"{msg}\n<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>")
+
+    @staticmethod
+    def _is_valid_url(u: str) -> bool:
+        try:
+            p = urlparse(u)
+            return p.scheme in {"http", "https"} and bool(p.netloc)
+        except Exception:
+            return False
+
+    async def _bootstrap(self):
+        ar = self.state.get_autorun()
+        if ar.get("enabled") and ar.get("chat_id"):
+            self.autorun_enabled = True
+            self.autorun_minutes = int(ar.get("minutes", 300))
+            self.autorun_chat_id = int(ar.get("chat_id"))
+            self.autorun_task = asyncio.create_task(self.autorun_loop(self.autorun_chat_id))
 
     def run(self):
         now = datetime.now()
         print(f"[{now}] Starting application ...")
-        self.app.run()
+        self.app.run(self._bootstrap())
         print(f"[{now}] Exiting application ...")
 
 
