@@ -1,3 +1,5 @@
+runtime_state.json
+secrets.json
 /venv/
 /src/.env
 /src/processor.session

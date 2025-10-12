@@ -4,15 +4,15 @@ import asyncio
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-import requests
 from dotenv import load_dotenv
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 
 from youtubeExtractor import youtubeExtractor
 from worksheetExtractor import worksheetExtractor
 from authManager import authManager
 from apiManager import apiManager
 from stateStore import stateStore
+from n8nManager import n8nManager
 
 load_dotenv()
 
@@ -35,7 +35,6 @@ class MyBot:
             bot_token=self.bot_token,
             api_id=self.api_id,
             api_hash=self.api_hash,
-            parse_mode="html",
         )
 
         self.auth = authManager(
@@ -51,6 +50,7 @@ class MyBot:
             spreadsheet_url=self.spreadsheet_url,
             worksheet_index=2,
         )
+        self.n8n = n8nManager()
 
         ar = self.state.get_autorun()
         self.autorun_enabled = bool(ar.get("enabled", False))
@@ -58,57 +58,7 @@ class MyBot:
         self.autorun_chat_id = ar.get("chat_id")
         self.autorun_task = None
 
-        self.awaiting_api_json = set()
         self.register_handlers()
-
-    def _n8n_headers(self) -> dict:
-        n8n = self.apis.data.get("n8n", {})
-        headers = {"Content-Type": "application/json"}
-        auth = n8n.get("auth")
-        if auth:
-            headers["Authorization"] = auth
-        return headers
-
-    def _n8n_url(self, key: str) -> str | None:
-        return self.apis.data.get("n8n", {}).get(key)
-
-    async def trigger_n8n_start(self, chat_id: int) -> str:
-        url = self._n8n_url("webhook_start")
-        if not url:
-            return "n8n webhook_start не настроен. Вызови /api и добавь URL."
-        try:
-            r = requests.post(
-                url,
-                headers=self._n8n_headers(),
-                data=json.dumps({"trigger": "manual", "chat_id": chat_id}),
-                timeout=20,
-            )
-            if 200 <= r.status_code < 300:
-                return "Пайплайн в n8n запущен."
-            return f"n8n ответил HTTP {r.status_code}: {r.text[:200]}"
-        except requests.Timeout:
-            return "n8n: таймаут запроса."
-        except Exception as e:
-            return f"n8n: ошибка запроса — {e}"
-
-    async def trigger_n8n_enqueue(self, chat_id: int, url_to_enqueue: str) -> str:
-        url = self._n8n_url("webhook_enqueue")
-        if not url:
-            return "n8n webhook_enqueue не настроен. Вызови /api и добавь URL."
-        try:
-            r = requests.post(
-                url,
-                headers=self._n8n_headers(),
-                data=json.dumps({"url": url_to_enqueue, "chat_id": chat_id}),
-                timeout=20,
-            )
-            if 200 <= r.status_code < 300:
-                return "Видео добавлено в очередь."
-            return f"n8n ответил HTTP {r.status_code}: {r.text[:200]}"
-        except requests.Timeout:
-            return "n8n: таймаут запроса."
-        except Exception as e:
-            return f"n8n: ошибка запроса — {e}"
 
     async def run_pipeline(self, client, message):
         yt_stats = self.youtube._get_channel_core_stats(self.youtube_channel_id)
@@ -117,7 +67,7 @@ class MyBot:
 
         await message.reply(f"Пайплайн: проверка метрик\n\n📊 YouTube:\n{yt_stats}\n\n📑 Sheets:\n{sheet_text}")
 
-        note = await self.trigger_n8n_start(message.chat.id)
+        note = await self.n8n.trigger_start(message.chat.id)
         await message.reply(note)
 
         self.state.set_last_run_at(datetime.now(timezone.utc).isoformat())
@@ -129,7 +79,7 @@ class MyBot:
             if not self.autorun_enabled or self.autorun_chat_id != chat_id:
                 break
             try:
-                note = await self.trigger_n8n_start(chat_id)
+                note = await self.n8n.trigger_start(chat_id)
                 await self.app.send_message(chat_id, f"Запуск по расписанию.\n{note}")
                 self.state.set_last_run_at(datetime.now(timezone.utc).isoformat())
             except Exception as e:
@@ -148,13 +98,8 @@ class MyBot:
             parts = message.text.split(maxsplit=1)
             already = self.auth.is_authorized(message.chat.id)
 
-            if already and len(parts) == 1:
-                note = await self.trigger_n8n_start(message.chat.id)
-                await message.reply(note)
-                return
-
-            if already and len(parts) > 1:
-                await message.reply("Вы уже авторизованы. Команды: /stat /enqueue /autorun /autostop /api /api_check")
+            if already:
+                await message.reply("✅ Вы уже авторизованы. Команды: /start_pipeline /stat /enqueue /autorun /autostop /api_check")
                 return
 
             if len(parts) == 2:
@@ -164,12 +109,19 @@ class MyBot:
                 except Exception:
                     pass
                 if ok:
-                    await message.reply("Авторизация успешна. Доступны команды: /stat /enqueue /autorun /autostop /api /api_check")
+                    await message.reply("🎉 Авторизация успешна. Доступны команды: /start_pipeline /stat /enqueue /autorun /autostop /api_check")
                 else:
-                    await message.reply("Неверный пароль. Отправь: <code>/start &lt;пароль&gt;</code>")
+                    await message.reply("❌ Неверный пароль. Отправь: <code>/start &lt;пароль&gt;</code>")
                 return
 
-            await message.reply("Привет! Чтобы авторизоваться, отправь: <code>/start &lt;пароль&gt;</code>")
+            await message.reply("👋 Привет! Чтобы авторизоваться, отправь: <code>/start &lt;пароль&gt;</code>")
+
+        @self.app.on_message(filters.command("start_pipeline"))
+        async def start_pipeline_handler(client, message):
+            if not await require_auth_or_reply(message):
+                return
+            note = await self.n8n.trigger_start(message.chat.id)
+            await message.reply(f"🚀 {note}")
 
         @self.app.on_message(filters.command("stat"))
         async def stat_handler(client, message):
@@ -194,7 +146,7 @@ class MyBot:
                 await message.reply("❌ Некорректный URL. Нужен http(s)://...")
                 return
 
-            note = await self.trigger_n8n_enqueue(message.chat.id, url_to_enqueue)
+            note = await self.n8n.trigger_enqueue(message.chat.id, url_to_enqueue)
             await message.reply(note)
 
         @self.app.on_message(filters.command("autorun"))
@@ -219,8 +171,9 @@ class MyBot:
             self.autorun_chat_id = message.chat.id
             self.state.set_autorun(enabled=True, minutes=mins, chat_id=message.chat.id)
 
-            await message.reply(f"♻️ Autorun включен (каждые {mins} мин). Сразу запускаю пайплайн…")
-            note = await self.trigger_n8n_start(message.chat.id)
+            await message.reply(f"♻️ Autorun включен (каждые {mins} мин). Первый запуск — сейчас…")
+            _ = await self.n8n.trigger_autorun(message.chat.id, "start", mins)
+            note = await self.n8n.trigger_start(message.chat.id)
             await message.reply(note)
 
             if self.autorun_task is None or self.autorun_task.done():
@@ -239,6 +192,9 @@ class MyBot:
             self.state.set_autorun(enabled=False, minutes=self.autorun_minutes, chat_id=self.autorun_chat_id)
             if self.autorun_task:
                 self.autorun_task.cancel()
+
+            _ = await self.n8n.trigger_autorun(message.chat.id, "stop")
+
             await message.reply("🛑 Autorun выключен.")
 
         @self.app.on_message(filters.command("api_check"))
@@ -268,7 +224,14 @@ class MyBot:
     def run(self):
         now = datetime.now()
         print(f"[{now}] Starting application ...")
-        self.app.run(self._bootstrap())
+
+        async def runner():
+            await self.app.start()
+            await self._bootstrap()
+            await idle()
+            await self.app.stop()
+
+        self.app.run(runner())
         print(f"[{now}] Exiting application ...")
 
 
