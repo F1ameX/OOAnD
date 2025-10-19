@@ -10,7 +10,7 @@ from pyrogram import Client, filters, idle
 from youtubeExtractor import youtubeExtractor
 from worksheetExtractor import worksheetExtractor
 from authManager import authManager
-from apiManager import apiManager
+from apiKeysManager import apiManager
 from stateStore import stateStore
 from n8nManager import n8nManager
 
@@ -99,7 +99,7 @@ class MyBot:
             already = self.auth.is_authorized(message.chat.id)
 
             if already:
-                await message.reply("✅ Вы уже авторизованы. Команды: /start_pipeline /stat /enqueue /autorun /autostop /api_check")
+                await message.reply("Вы уже авторизованы.")
                 return
 
             if len(parts) == 2:
@@ -109,19 +109,19 @@ class MyBot:
                 except Exception:
                     pass
                 if ok:
-                    await message.reply("🎉 Авторизация успешна. Доступны команды: /start_pipeline /stat /enqueue /autorun /autostop /api_check")
+                    await message.reply("Авторизация успешна.")
                 else:
-                    await message.reply("❌ Неверный пароль. Отправь: <code>/start &lt;пароль&gt;</code>")
+                    await message.reply("Неверный пароль. Отправь: <code>/start &lt;пароль&gt;</code>")
                 return
 
-            await message.reply("👋 Привет! Чтобы авторизоваться, отправь: <code>/start &lt;пароль&gt;</code>")
+            await message.reply("Привет! Чтобы авторизоваться, отправь: <code>/start &lt;пароль&gt;</code>")
 
         @self.app.on_message(filters.command("start_pipeline"))
         async def start_pipeline_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
             note = await self.n8n.trigger_start(message.chat.id)
-            await message.reply(f"🚀 {note}")
+            await message.reply(f"{note}")
 
         @self.app.on_message(filters.command("stat"))
         async def stat_handler(client, message):
@@ -148,7 +148,7 @@ class MyBot:
 
             note = await self.n8n.trigger_enqueue(message.chat.id, url_to_enqueue)
             await message.reply(note)
-
+        # 
         @self.app.on_message(filters.command("autorun"))
         async def autorun_handler(client, message):
             if not await require_auth_or_reply(message):
@@ -171,7 +171,7 @@ class MyBot:
             self.autorun_chat_id = message.chat.id
             self.state.set_autorun(enabled=True, minutes=mins, chat_id=message.chat.id)
 
-            await message.reply(f"♻️ Autorun включен (каждые {mins} мин). Первый запуск — сейчас…")
+            await message.reply(f"Autorun включен (каждые {mins} мин).")
             _ = await self.n8n.trigger_autorun(message.chat.id, "start", mins)
             note = await self.n8n.trigger_start(message.chat.id)
             await message.reply(note)

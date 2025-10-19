@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Iterable, Set
 
+
 class authManager:
     def __init__(
         self,

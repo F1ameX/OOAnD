@@ -12,6 +12,7 @@ from gspread import service_account
 def _ok(msg: str = "ok") -> Dict[str, Any]:
     return {"ok": True, "detail": msg}
 
+
 def _err(msg: str) -> Dict[str, Any]:
     return {"ok": False, "detail": msg}
 
