@@ -1,6 +1,8 @@
 import pandas as pd
 from typing import Optional
 from gspread import service_account
+from gspread.utils import rowcol_to_a1
+
 
 class worksheetExtractor:
     def __init__(
@@ -46,3 +48,24 @@ class worksheetExtractor:
             df = df.dropna(how="all").dropna(axis=1, how="all")
 
         return df
+
+    def append_description(
+        self,
+        description: str,
+        video_url: Optional[str],
+        chat_id: int,
+        timestamp_iso: str,
+        sheet_name: str = "Descriptions"
+    ) -> None:
+        try:
+            ws = self.sh.worksheet(sheet_name)
+        except Exception:
+            ws = self.sh.add_worksheet(title=sheet_name, rows=1000, cols=4)
+
+        headers = ws.row_values(1)
+        if not headers:
+            ws.update("A1:D1", [["timestamp", "chat_id", "video_url", "description"]])
+
+        next_row = len(ws.get_all_values()) + 1
+        a1 = rowcol_to_a1(next_row, 1)
+        ws.update(a1, [[timestamp_iso, str(chat_id), video_url or "", description]])
