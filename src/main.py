@@ -143,12 +143,12 @@ class MyBot:
 
             url_to_enqueue = args[1].strip()
             if not self._is_valid_url(url_to_enqueue):
-                await message.reply("❌ Некорректный URL. Нужен http(s)://...")
+                await message.reply("Некорректный URL. Нужен http(s)://...")
                 return
 
             note = await self.n8n.trigger_enqueue(message.chat.id, url_to_enqueue)
             await message.reply(note)
-        # 
+
         @self.app.on_message(filters.command("autorun"))
         async def autorun_handler(client, message):
             if not await require_auth_or_reply(message):
@@ -195,14 +195,14 @@ class MyBot:
 
             _ = await self.n8n.trigger_autorun(message.chat.id, "stop")
 
-            await message.reply("🛑 Autorun выключен.")
+            await message.reply("Autorun выключен.")
 
         @self.app.on_message(filters.command("api_check"))
         async def api_check_handler(client, message):
             if not await require_auth_or_reply(message):
                 return
             results = self.apis.health_all(fallback_channel_id=self.youtube_channel_id)
-            msg = "✅ Все API работают." if results.get("all_ok") else "❌ Есть проблемы с API."
+            msg = "Все API работают." if results.get("all_ok") else "Есть проблемы с API."
             await message.reply(f"{msg}\n<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>")
 
     @staticmethod

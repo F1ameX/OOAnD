@@ -20,16 +20,16 @@ class n8nManager:
 
     def _post(self, url: str, payload: dict) -> str:
         if not url:
-            return "❌ Webhook URL не настроен."
+            return "Webhook URL не настроен."
         try:
             r = requests.post(url, headers=self._headers(), data=json.dumps(payload), timeout=20)
             if 200 <= r.status_code < 300:
-                return "✅ Успешно отправлено в n8n."
-            return f"⚠️ n8n ответил HTTP {r.status_code}: {r.text[:200]}"
+                return "Успешно отправлено в n8n."
+            return f"n8n ответил HTTP {r.status_code}: {r.text[:200]}"
         except requests.Timeout:
-            return "⏱️ n8n: таймаут запроса."
+            return "⏱n8n: таймаут запроса."
         except Exception as e:
-            return f"💥 Ошибка n8n: {e}"
+            return f"Ошибка n8n: {e}"
 
     async def trigger_start(self, chat_id: int) -> str:
         """POST в webhook_start"""
