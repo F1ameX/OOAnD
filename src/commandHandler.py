@@ -103,11 +103,11 @@ class CommandHandler:
             try:
                 info = self.worksheet.get_info_metrics(sheet_name="stat")
                 gs_block += [
-                    "🤖 n8n Agent (Google Sheets • лист info):",
-                    f"• Videos processed: {fmt(info.get('videos_processed', 0))}",
-                    f"• Clips processed: {fmt(info.get('clips_processed', 0))}",
-                    f"• Videos in queue: {fmt(info.get('videos_in_queue', 0))}",
-                    f"• Clips in queue: {fmt(info.get('clips_in_queue', 0))}",
+                    "🤖 n8n Agent :",
+                    f"• Видео обработано: {fmt(info.get('videos_processed', 0))}",
+                    f"• Клипов обработано: {fmt(info.get('clips_processed', 0))}",
+                    f"• Видео в очереди: {fmt(info.get('videos_in_queue', 0))}",
+                    f"• Клипов в очереди: {fmt(info.get('clips_in_queue', 0))}",
                 ]
                 gs_ok = True
             except Exception as e:
