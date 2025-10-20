@@ -1,16 +1,24 @@
 import os
-import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from pyrogram import Client, idle
 
-from youtubeExtractor import youtubeExtractor
-from worksheetExtractor import worksheetExtractor
-from authManager import authManager
-from apiKeysManager import apiManager
-from stateStore import stateStore
-from n8nManager import n8nManager
-from commandHandler import CommandHandler
+from extractors.youtubeExtractor import youtubeExtractor
+from extractors.worksheetExtractor import worksheetExtractor
+from managers.authManager import authManager
+from managers.apiKeysManager import apiManager
+from managers.stateStore import stateStore
+from managers.n8nManager import n8nManager
+
+from handlers.startHandler import startHandler
+from handlers.startPipelineHandler import startPipelineHandler
+from handlers.statHandler import statHandler
+from handlers.enqueueHandler import enqueueHandler
+from handlers.autorunHandler import autorunHandler
+from handlers.autostopHandler import autostopHandler
+from handlers.apiCheckHandler import apiCheckHandler
+from handlers.setDescriptionHandler import setDescriptionHandler
+from handlers.apiAddHandler import apiAddHandler
 
 load_dotenv()
 
@@ -41,7 +49,6 @@ class MyBot:
         )
         self.apis = apiManager(secrets_path=os.getenv("SECRETS_PATH", "secrets.json"))
         self.state = stateStore(path=os.getenv("RUNTIME_STATE_PATH", "runtime_state.json"))
-
         self.youtube = youtubeExtractor(api_key=self.youtube_key)
         self.worksheet = worksheetExtractor(
             file_location=self.file_location,
@@ -50,20 +57,22 @@ class MyBot:
         )
         self.n8n = n8nManager()
 
-        self.handlers = CommandHandler(
-            app=self.app,
-            auth=self.auth,
-            apis=self.apis,
-            state=self.state,
-            youtube=self.youtube,
-            worksheet=self.worksheet,
-            n8n=self.n8n,
-            youtube_channel_id=self.youtube_channel_id,
-        )
-        self.handlers.register()
+        handlers = [
+            startHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            startPipelineHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            statHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            enqueueHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            autorunHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            autostopHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            apiCheckHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            setDescriptionHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+            apiAddHandler(self.app, self.auth, self.apis, self.state, self.youtube, self.worksheet, self.n8n, self.youtube_channel_id),
+        ]
+        for h in handlers:
+            h.register()
 
     async def _bootstrap(self):
-        await self.handlers.bootstrap_autorun()
+        pass
 
     def run(self):
         now = datetime.now()
