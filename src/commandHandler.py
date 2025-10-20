@@ -28,7 +28,7 @@ class CommandHandler:
             already = self.auth.is_authorized(message.chat.id)
 
             if already:
-                await message.reply("Вы уже авторизованы. Команды: /start_pipeline /stat /enqueue /autorun /autostop /set_description /api_add /api_check")
+                await message.reply("Вы уже авторизованы. Команды: /start_pipeline /stat /enqueue /autorun /autostop /set_description /api /api_check")
                 return
 
             if len(parts) == 2:
@@ -38,7 +38,7 @@ class CommandHandler:
                 except Exception:
                     pass
                 if ok:
-                    await message.reply("Авторизация успешна. Команды: /start_pipeline /stat /enqueue /autorun /autостop /set_description /api_add /api_check")
+                    await message.reply("Авторизация успешна. Команды: /start_pipeline /stat /enqueue /autorun /autостop /set_description /api /api_check")
                 else:
                     await message.reply("Неверный пароль. Отправь: /start <пароль>")
                 return
@@ -58,10 +58,83 @@ class CommandHandler:
             if not self.auth.is_authorized(message.chat.id):
                 await message.reply("Доступ запрещён. Авторизуйся: /start <пароль>")
                 return
-            yt_stats = self.youtube._get_channel_core_stats(self.youtube_channel_id)
-            sheet_stats = self.worksheet._get_agent_core_stats(header_row=1)
-            sheet_text = sheet_stats.to_string(index=False)
-            await message.reply(f"📊 YouTube:\n{yt_stats}\n\n📑 Sheets:\n{sheet_text}")
+
+            errors = []
+            lines = []
+
+            # helper для красивых чисел под RU: 12 345
+            fmt = lambda n: f"{int(n):,}".replace(",", " ")
+
+            # --- YouTube ---
+            yt_ok = False
+            yt_block = []
+            try:
+                yt_raw = self.youtube._get_channel_core_stats(self.youtube_channel_id)
+                if yt_raw is None:
+                    raise RuntimeError("данные YouTube пустые")
+                # у тебя метод возвращает JSON-строку -> парсим
+                if isinstance(yt_raw, str):
+                    import json as _json
+                    yt = _json.loads(yt_raw)
+                elif isinstance(yt_raw, dict):
+                    yt = yt_raw
+                else:
+                    raise RuntimeError("неожиданный формат ответа YouTube")
+
+                views = yt.get("views")
+                subs = yt.get("subs")
+                videos = yt.get("videos")
+                last24 = yt.get("videos_last_24h")
+
+                yt_block += [
+                    "📺 YouTube:",
+                    f"• Просмотры: {fmt(views) if views is not None else '—'}",
+                    f"• Подписчики: {fmt(subs) if subs is not None else '—'}",
+                    f"• Видео на канале: {fmt(videos) if videos is not None else '—'}",
+                    f"• Видео за 24 часа: {fmt(last24) if last24 is not None else '—'}",
+                ]
+                yt_ok = True
+            except Exception as e:
+                errors.append(f"YouTube: {e}")
+
+            # --- Google Sheets (лист info) ---
+            gs_ok = False
+            gs_block = []
+            try:
+                info = self.worksheet.get_info_metrics(sheet_name="stat")
+                gs_block += [
+                    "🤖 n8n Agent (Google Sheets • лист info):",
+                    f"• Videos processed: {fmt(info.get('videos_processed', 0))}",
+                    f"• Clips processed: {fmt(info.get('clips_processed', 0))}",
+                    f"• Videos in queue: {fmt(info.get('videos_in_queue', 0))}",
+                    f"• Clips in queue: {fmt(info.get('clips_in_queue', 0))}",
+                ]
+                gs_ok = True
+            except Exception as e:
+                errors.append(f"Google Sheets: {e}")
+
+            # Сбор финального сообщения
+            if yt_ok:
+                lines += yt_block
+            if gs_ok:
+                if lines:
+                    lines.append("")  # пустая строка между блоками
+                lines += gs_block
+
+            if errors:
+                if lines:
+                    lines.append("")  # отделим ошибки от статистики
+                lines.append("⚠️ Предупреждения:")
+                for err in errors:
+                    lines.append(f"• {err}")
+
+            if not yt_ok and not gs_ok:
+                # оба источника упали
+                await message.reply("❌ Не удалось получить статистику ни из YouTube, ни из Google Sheets.\n"
+                                    + "\n".join(f"• {e}" for e in errors))
+                return
+
+            await message.reply("\n".join(lines))
 
         @self.app.on_message(filters.command("enqueue"))
         async def enqueue_handler(client, message):
@@ -127,24 +200,41 @@ class CommandHandler:
             note = await self.n8n.trigger_autorun(message.chat.id, "stop")
             await message.reply(f"{note}")
 
-        @self.app.on_message(filters.command("api_check"))
+        @self.app.on_message(filters.command("api_check"))          #ауацваываоваовыавыа
         async def api_check_handler(client, message):
             if not self.auth.is_authorized(message.chat.id):
                 await message.reply("Доступ запрещён. Авторизуйся: /start <пароль>")
                 return
             results = self.apis.health_all(fallback_channel_id=self.youtube_channel_id)
-            msg = "✅ Все API работают." if results.get("all_ok") else "❌ Есть проблемы с API."
+
+            parts = [results["n8n"]["ok"], results["youtube"]["ok"], results["sheets"]["ok"],
+                    results["cloudinary"]["ok"], results["swiftia"]["ok"], results["gemini"]["ok"]]
+            all_ok = all(parts)
+            results["all_ok"] = all_ok
+            msg = "✅ Все API доступны." if all_ok else "❌ Есть проблемы с API."
             await message.reply(f"{msg}\n<pre>{json.dumps(results, ensure_ascii=False, indent=2)}</pre>")
 
-        @self.app.on_message(filters.command("set_description"))
+        @self.app.on_message(filters.command("set_description"))                #ываыаваыва
         async def set_description_handler(client, message):
             if not self.auth.is_authorized(message.chat.id):
                 await message.reply("Доступ запрещён. Авторизуйся: /start <пароль>")
                 return
             args = message.text.split(maxsplit=1)
             if len(args) < 2:
-                await message.reply("Используй: /set_description <текст> или /set_description <url> | <текст>")
+                await message.reply("Используй: /set_description <текст>")
                 return
+
+            description = args[1].strip()
+            if not description:
+                await message.reply("Пустое описание не допускается.")
+                return
+
+            try:
+                self.worksheet.set_current_description(description, sheet_name="Config", key="video_description")
+                await message.reply("тема обновлена")
+            except Exception as e:
+                await message.reply(f"Ошибка записи в Google Sheets: {e}")
+
 
             payload = args[1].strip()
             video_url = None
@@ -168,14 +258,14 @@ class CommandHandler:
             except Exception as e:
                 await message.reply(f"Ошибка записи в Google Sheets: {e}")
 
-        @self.app.on_message(filters.command("api_add"))
+        @self.app.on_message(filters.command("api"))
         async def api_add_handler(client, message):
             if not self.auth.is_authorized(message.chat.id):
                 await message.reply("Доступ запрещён. Авторизуйся: /start <пароль>")
                 return
             args = message.text.split(maxsplit=1)
             if len(args) < 2:
-                await message.reply("Пришли JSON после команды. Пример:\n/api_add {\"n8n\": {\"webhook_start\": \"https://...\"}}")
+                await message.reply("Пришли JSON после команды. Пример:\n/api {\"n8n\": {\"webhook_start\": \"https://...\"}}")
                 return
             raw = args[1].strip()
             try:
